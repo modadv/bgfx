@@ -1,6 +1,12 @@
 #include <bx/allocator.h>
 #include <bx/debug.h>
 #include <bx/math.h>
+#include <bx/file.h>
+#include <bimg/decode.h>
+#include <bimg/encode.h>
+
+#include <iostream>
+
 #include "common.h"
 #include "bgfx_utils.h"
 #include "imgui/imgui.h"
@@ -70,6 +76,82 @@ namespace
 		ExampleTerrain(const char* _name, const char* _description, const char* _url)
 			: entry::AppI(_name, _description, _url)
 		{
+		}
+		// 从标准图像格式(PNG、JPG等)加载纹理
+		bgfx::TextureHandle loadTextureFromFile(const char* _filePath, uint64_t _flags = BGFX_TEXTURE_NONE | BGFX_SAMPLER_NONE)
+		{
+			bgfx::TextureHandle handle = BGFX_INVALID_HANDLE;
+
+			// 打开文件
+			bx::FileReader reader;
+			if (!bx::open(&reader, _filePath))
+			{
+				printf("Failed to open image file: %s\n", _filePath);
+				return handle;
+			}
+
+			// 获取文件大小并读取数据
+			uint32_t size = (uint32_t)bx::getSize(&reader);
+			void* data = bx::alloc(entry::getAllocator(), size);
+
+			bx::Error err;
+			bx::read(&reader, data, size, &err);
+			bx::close(&reader);
+
+			if (err.isOk())
+			{
+				// 解码图像
+				bimg::ImageContainer* imageContainer = bimg::imageParse(entry::getAllocator(), data, size);
+				bx::free(entry::getAllocator(), data);
+
+				if (nullptr != imageContainer)
+				{
+					// 将图像转换为RGBA8格式，这是最通用的格式
+					bimg::ImageContainer* rgba8Container = bimg::imageConvert(entry::getAllocator(),
+						bimg::TextureFormat::RGBA8,
+						*imageContainer);
+
+					// 如果转换成功，释放原始容器，使用转换后的容器
+					if (rgba8Container != nullptr)
+					{
+						bimg::imageFree(imageContainer);
+						imageContainer = rgba8Container;
+					}
+
+					// 创建内存引用
+					const bgfx::Memory* mem = bgfx::copy(imageContainer->m_data, imageContainer->m_size);
+
+					// 创建纹理
+					handle = bgfx::createTexture2D(
+						uint16_t(imageContainer->m_width),
+						uint16_t(imageContainer->m_height),
+						false, // 不使用mip maps简化处理
+						1,     // 只用一层
+						bgfx::TextureFormat::RGBA8, // 使用RGBA8格式
+						_flags,
+						mem
+					);
+
+					// 释放图像容器
+					bimg::imageFree(imageContainer);
+
+					if (!bgfx::isValid(handle))
+					{
+						printf("Failed to create texture from: %s\n", _filePath);
+					}
+				}
+				else
+				{
+					printf("Failed to parse image: %s\n", _filePath);
+				}
+			}
+			else
+			{
+				printf("Failed to read image file: %s\n", _filePath);
+				bx::free(entry::getAllocator(), data);
+			}
+
+			return handle;
 		}
 
 		void init(int32_t _argc, const char* const* _argv, uint32_t _width, uint32_t _height) override
@@ -341,7 +423,8 @@ namespace
 
 				if (!bgfx::isValid(m_heightTexture))
 				{
-					m_heightTexture = bgfx::createTexture2D(s_terrainSize, s_terrainSize, false, 1, bgfx::TextureFormat::R8);
+					// m_heightTexture = bgfx::createTexture2D(s_terrainSize, s_terrainSize, false, bgfx::TextureFormat::D32, bgfx::TextureFormat::R8);
+					m_heightTexture = loadTextureFromFile("textures/0010.png", BGFX_SAMPLER_MIN_ANISOTROPIC | BGFX_SAMPLER_MAG_ANISOTROPIC);
 				}
 
 				mem = bgfx::makeRef(&m_terrain.m_heightMap[0], sizeof(uint8_t) * s_terrainSize * s_terrainSize);
